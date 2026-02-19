@@ -67,12 +67,23 @@ def convert_to_wav(src: Path) -> Path:
 
 
 def save_stem(url: str, dest_path: Path) -> None:
-    """Download a stem from a URL and save it to dest_path."""
+    """Download a stem (WAV) from a URL, convert to MP3 and save to dest_path."""
     log.info("Downloading stem → %s", dest_path)
     with httpx.Client(follow_redirects=True, timeout=120) as client:
         response = client.get(url)
         response.raise_for_status()
-    dest_path.write_bytes(response.content)
+
+    # Salva o WAV em temp e converte para MP3; descarta o WAV intermediário
+    tmp_wav = dest_path.with_suffix(".wav.tmp")
+    tmp_wav.write_bytes(response.content)
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(tmp_wav), "-q:a", "2", str(dest_path)],
+            check=True,
+            capture_output=True,
+        )
+    finally:
+        tmp_wav.unlink(missing_ok=True)
 
 
 def parse_stems(output) -> dict[str, str]:
@@ -175,7 +186,7 @@ async def separate(file: UploadFile = File(...)) -> JSONResponse:
     saved_stems: dict[str, str] = {}
     try:
         for stem_name, url in stems_urls.items():
-            dest = out_dir / f"{stem_name}.wav"
+            dest = out_dir / f"{stem_name}.mp3"
             save_stem(url, dest)
             saved_stems[stem_name] = str(dest)
     except Exception as exc:

@@ -117,22 +117,29 @@ class TestParseStems:
 # ---------------------------------------------------------------------------
 
 class TestSaveStem:
-    def test_salva_bytes_no_arquivo(self, tmp_path):
-        dest = tmp_path / "vocals.wav"
-        fake_content = b"RIFF fake wav audio data"
+    def test_converte_e_salva_mp3(self, tmp_path):
+        dest = tmp_path / "vocals.mp3"
+        fake_wav = b"RIFF fake wav audio data"
+        fake_mp3 = b"ID3 fake mp3 data"
 
-        with patch("main.httpx.Client") as mock_cls:
+        def fake_ffmpeg(cmd, **kwargs):
+            # Simula ffmpeg escrevendo o mp3 de destino
+            Path(cmd[6]).write_bytes(fake_mp3)  # cmd[6] = dest_path
+            return MagicMock(returncode=0)
+
+        with patch("main.httpx.Client") as mock_cls, \
+             patch("main.subprocess.run", side_effect=fake_ffmpeg):
             mock_response = MagicMock()
-            mock_response.content = fake_content
+            mock_response.content = fake_wav
             mock_cls.return_value.__enter__.return_value.get.return_value = mock_response
 
             save_stem("https://cdn.example.com/vocals.wav", dest)
 
         assert dest.exists()
-        assert dest.read_bytes() == fake_content
+        assert dest.read_bytes() == fake_mp3
 
     def test_levanta_excecao_em_http_erro(self, tmp_path):
-        dest = tmp_path / "vocals.wav"
+        dest = tmp_path / "vocals.mp3"
 
         with patch("main.httpx.Client") as mock_cls:
             mock_response = MagicMock()
