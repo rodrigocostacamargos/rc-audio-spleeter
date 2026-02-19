@@ -5,7 +5,6 @@ vocals, drums, bass, other
 """
 
 import os
-import uuid
 import logging
 import tempfile
 import subprocess
@@ -26,7 +25,7 @@ load_dotenv()  # carrega variáveis do arquivo .env (se existir)
 
 ALLOWED_CONTENT_TYPES = {"audio/wav", "audio/wave", "audio/mpeg", "audio/mp3", "audio/x-wav", "audio/mp4", "audio/x-m4a", "video/mp4"}
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".m4a"}
-OUTPUT_DIR = Path("output")
+STEMS_DIR = Path("stems")
 
 REPLICATE_MODEL = "lucataco/mvsep-mdx23-music-separation:510b9b91aec1bfa7d634e6c06ee80c18492fb0fc06aa1474533fbda90dd3dba4"
 
@@ -125,9 +124,9 @@ async def separate(file: UploadFile = File(...)) -> JSONResponse:
     # 1. Validate input
     validate_audio_file(file)
 
+    original_name = Path(file.filename or "audio").stem  # nome sem extensão
     suffix = Path(file.filename or "audio").suffix.lower() or ".wav"
-    request_id = str(uuid.uuid4())
-    log.info("New request %s — file: %s", request_id, file.filename)
+    log.info("New request — file: %s", file.filename)
 
     # 2. Save upload to a temp file so Replicate can read it
     try:
@@ -179,26 +178,24 @@ async def separate(file: UploadFile = File(...)) -> JSONResponse:
     if not stems_urls:
         raise HTTPException(status_code=500, detail="Model returned no stems.")
 
-    # 4. Save stems to output/{request_id}/
-    out_dir = OUTPUT_DIR / request_id
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # 5. Salva stems em stems/{instrumento}_{nome_da_musica}.mp3
+    STEMS_DIR.mkdir(parents=True, exist_ok=True)
 
     saved_stems: dict[str, str] = {}
     try:
         for stem_name, url in stems_urls.items():
-            dest = out_dir / f"{stem_name}.mp3"
+            dest = STEMS_DIR / f"{stem_name}_{original_name}.mp3"
             save_stem(url, dest)
             saved_stems[stem_name] = str(dest)
     except Exception as exc:
         log.exception("Failed to download stems")
         raise HTTPException(status_code=500, detail=f"Could not download stems: {exc}") from exc
 
-    log.info("Request %s complete — stems: %s", request_id, list(saved_stems.keys()))
+    log.info("Stems salvas: %s", list(saved_stems.values()))
 
     return JSONResponse(
         status_code=200,
         content={
-            "request_id": request_id,
             "stems": list(saved_stems.keys()),
             "paths": saved_stems,
         },

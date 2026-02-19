@@ -206,9 +206,12 @@ class TestSeparateEndpoint:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert "request_id" in data
+        assert "request_id" not in data
         assert set(data["stems"]) == {"vocals", "drums", "bass", "other"}
         assert all(k in data["paths"] for k in ["vocals", "drums", "bass", "other"])
+        # paths devem seguir o padrão {instrumento}_{nome_da_musica}.mp3
+        for stem, path in data["paths"].items():
+            assert path.endswith(f"{stem}_song.mp3")
 
     @patch("main.save_stem")
     @patch("main.replicate.Client")
@@ -253,13 +256,14 @@ class TestSeparateEndpoint:
 
     @patch("main.save_stem")
     @patch("main.replicate.Client")
-    def test_resposta_contem_request_id_unico(self, mock_client_cls, mock_save):
+    def test_paths_usam_nome_da_musica(self, mock_client_cls, mock_save):
         real_mock, _ = make_replicate_client_mock({"vocals": "https://cdn.example.com/vocals.wav"})
         mock_client_cls.side_effect = real_mock.side_effect
         mock_client_cls.return_value = real_mock.return_value
         mock_save.return_value = None
 
-        r1 = client.post("/separate", files={"file": ("a.wav", b"RIFF", "audio/wav")})
-        r2 = client.post("/separate", files={"file": ("b.wav", b"RIFF", "audio/wav")})
+        resp = client.post("/separate", files={"file": ("minha musica.wav", b"RIFF", "audio/wav")})
 
-        assert r1.json()["request_id"] != r2.json()["request_id"]
+        assert resp.status_code == 200
+        paths = resp.json()["paths"]
+        assert paths["vocals"].endswith("vocals_minha musica.mp3")
