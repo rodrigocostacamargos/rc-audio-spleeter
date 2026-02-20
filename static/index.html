@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Audio Spleeter</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      padding: 2.5rem;
+      width: 100%;
+      max-width: 540px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 600;
+      margin-bottom: 0.3rem;
+      color: #fff;
+    }
+
+    .subtitle {
+      font-size: 0.85rem;
+      color: #666;
+      margin-bottom: 2rem;
+    }
+
+    /* Drop zone */
+    .dropzone {
+      border: 2px dashed #333;
+      border-radius: 8px;
+      padding: 2.5rem 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      position: relative;
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: #6c63ff;
+      background: #1e1b33;
+    }
+    .dropzone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+    .dropzone .icon { font-size: 2rem; margin-bottom: 0.5rem; }
+    .dropzone p { font-size: 0.9rem; color: #888; }
+    .dropzone .file-name {
+      margin-top: 0.6rem;
+      font-size: 0.85rem;
+      color: #aaa;
+      font-style: italic;
+    }
+
+    /* Button */
+    button {
+      width: 100%;
+      margin-top: 1.25rem;
+      padding: 0.8rem;
+      background: #6c63ff;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+    }
+    button:hover:not(:disabled) { background: #5a52e0; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Status */
+    .status {
+      margin-top: 1.25rem;
+      font-size: 0.85rem;
+      color: #888;
+      text-align: center;
+      min-height: 1.2em;
+    }
+    .status.error { color: #e05a5a; }
+
+    /* Progress bar */
+    .progress-wrap {
+      margin-top: 1rem;
+      background: #2a2a2a;
+      border-radius: 999px;
+      height: 6px;
+      overflow: hidden;
+      display: none;
+    }
+    .progress-wrap.visible { display: block; }
+    .progress-bar {
+      height: 100%;
+      background: #6c63ff;
+      width: 0%;
+      transition: width 0.4s ease;
+      border-radius: 999px;
+    }
+
+    /* Results */
+    .results {
+      margin-top: 1.75rem;
+      display: none;
+      flex-direction: column;
+      gap: 0.6rem;
+    }
+    .results.visible { display: flex; }
+    .results h2 {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #555;
+      margin-bottom: 0.2rem;
+    }
+
+    .stem-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      background: #222;
+      border-radius: 8px;
+      padding: 0.65rem 0.9rem;
+    }
+    .stem-label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #bbb;
+      width: 60px;
+      flex-shrink: 0;
+      text-transform: capitalize;
+    }
+    .stem-row audio {
+      flex: 1;
+      height: 32px;
+    }
+    .stem-row a {
+      font-size: 0.75rem;
+      color: #6c63ff;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .stem-row a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h1>Audio Spleeter</h1>
+  <p class="subtitle">Separa vocals · drums · bass · other via Replicate MDX23</p>
+
+  <div class="dropzone" id="dropzone">
+    <input type="file" id="fileInput" accept=".wav,.mp3,.m4a" />
+    <div class="icon">🎵</div>
+    <p>Arraste um arquivo ou clique para selecionar</p>
+    <p style="font-size:0.75rem;color:#555;margin-top:0.3rem">.wav · .mp3 · .m4a</p>
+    <p class="file-name" id="fileName"></p>
+  </div>
+
+  <button id="btn" disabled>Separar stems</button>
+
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-bar" id="progressBar"></div>
+  </div>
+
+  <p class="status" id="status"></p>
+
+  <div class="results" id="results">
+    <h2>Stems geradas</h2>
+    <div id="stemList"></div>
+  </div>
+</div>
+
+<script>
+  const API_URL = 'http://localhost:8000/separate';
+
+  const dropzone   = document.getElementById('dropzone');
+  const fileInput  = document.getElementById('fileInput');
+  const fileName   = document.getElementById('fileName');
+  const btn        = document.getElementById('btn');
+  const status     = document.getElementById('status');
+  const progressWrap = document.getElementById('progressWrap');
+  const progressBar  = document.getElementById('progressBar');
+  const results    = document.getElementById('results');
+  const stemList   = document.getElementById('stemList');
+
+  let selectedFile = null;
+
+  // Drag & drop visual feedback
+  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+  dropzone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file) setFile(file);
+  });
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) setFile(fileInput.files[0]);
+  });
+
+  function setFile(file) {
+    selectedFile = file;
+    fileName.textContent = file.name;
+    btn.disabled = false;
+    clearResults();
+  }
+
+  function clearResults() {
+    results.classList.remove('visible');
+    stemList.innerHTML = '';
+    status.textContent = '';
+    status.className = 'status';
+    progressWrap.classList.remove('visible');
+    progressBar.style.width = '0%';
+  }
+
+  // Fake progress animation while waiting for the model (~9 min)
+  let progressInterval = null;
+  function startProgress() {
+    progressWrap.classList.add('visible');
+    let pct = 0;
+    progressInterval = setInterval(() => {
+      // Sobe rápido até 80%, depois devagar — evita chegar em 100% antes de terminar
+      const step = pct < 80 ? 0.4 : 0.05;
+      pct = Math.min(pct + step, 95);
+      progressBar.style.width = pct + '%';
+    }, 500);
+  }
+
+  function stopProgress(success) {
+    clearInterval(progressInterval);
+    progressBar.style.width = success ? '100%' : '0%';
+    setTimeout(() => progressWrap.classList.remove('visible'), 1000);
+  }
+
+  btn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+
+    btn.disabled = true;
+    clearResults();
+    startProgress();
+    setStatus(`Enviando "${selectedFile.name}" para processamento…`);
+
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+
+    try {
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || `Erro ${res.status}`);
+      }
+
+      stopProgress(true);
+      setStatus('');
+      renderStems(data.stems, data.paths);
+
+    } catch (err) {
+      stopProgress(false);
+      setStatus('Erro: ' + err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  function setStatus(msg, isError = false) {
+    status.textContent = msg;
+    status.className = 'status' + (isError ? ' error' : '');
+  }
+
+  function renderStems(stems, paths) {
+    stemList.innerHTML = '';
+
+    const order = ['vocals', 'drums', 'bass', 'other'];
+    const sorted = order.filter(s => stems.includes(s));
+
+    for (const stem of sorted) {
+      const filePath = paths[stem];
+      // Expõe o arquivo via endpoint de download
+      const downloadUrl = `http://localhost:8000/stems/${encodeURIComponent(filePath.split('/').pop())}`;
+
+      const row = document.createElement('div');
+      row.className = 'stem-row';
+      row.innerHTML = `
+        <span class="stem-label">${stem}</span>
+        <audio controls preload="none" src="${downloadUrl}"></audio>
+        <a href="${downloadUrl}" download>baixar</a>
+      `;
+      stemList.appendChild(row);
+    }
+
+    results.classList.add('visible');
+  }
+</script>
+
+</body>
+</html>

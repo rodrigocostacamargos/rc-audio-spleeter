@@ -14,7 +14,8 @@ from pathlib import Path
 import replicate
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 load_dotenv()  # carrega variáveis do arquivo .env (se existir)
@@ -36,6 +37,26 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="Audio Stem Separator", version="1.0.0")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# ---------------------------------------------------------------------------
+# UI & file serving
+# ---------------------------------------------------------------------------
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    """Serve a interface web."""
+    return FileResponse("static/index.html")
+
+
+@app.get("/stems/{filename}")
+def download_stem(filename: str):
+    """Serve um arquivo de stem gerado para download/streaming."""
+    path = STEMS_DIR / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Stem não encontrada.")
+    return FileResponse(path, media_type="audio/mpeg", filename=filename)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
