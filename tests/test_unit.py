@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
-from main import app, validate_audio_file, parse_stems, save_stem, run_with_retry, separate_with_replicate, separate_with_local
+from main import app, jobs, validate_audio_file, parse_stems, save_stem, run_with_retry, separate_with_replicate, separate_with_local
 
 client = TestClient(app)
 
@@ -429,3 +429,51 @@ class TestSeparateEndpointBackend:
         data = wait_for_job(job_id)
         assert data["status"] == "done"
         mock_rep.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Endpoint POST /upload (form-based) + GET /job/{job_id}
+# ---------------------------------------------------------------------------
+
+class TestFormUpload:
+    @patch("main.separate_with_replicate")
+    def test_upload_redireciona_para_job(self, mock_rep):
+        mock_rep.return_value = {"vocals": "stems/vocals_song.mp3"}
+        resp = client.post(
+            "/upload",
+            files={"file": ("song.wav", b"RIFF", "audio/wav")},
+            data={"backend": "replicate"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert "job/" in resp.headers["location"]
+
+    @patch("main.separate_with_replicate")
+    def test_job_page_retorna_html(self, mock_rep):
+        mock_rep.return_value = {"vocals": "stems/vocals_song.mp3"}
+        resp = client.post(
+            "/upload",
+            files={"file": ("song.wav", b"RIFF", "audio/wav")},
+            data={"backend": "replicate"},
+            follow_redirects=False,
+        )
+        job_url = resp.headers["location"]
+        # Ensure absolute path for TestClient
+        if not job_url.startswith("/"):
+            job_url = "/" + job_url
+        page = client.get(job_url)
+        assert page.status_code == 200
+        assert "Processando" in page.text or "Concluido" in page.text
+
+    def test_upload_arquivo_invalido_retorna_400(self):
+        resp = client.post(
+            "/upload",
+            files={"file": ("doc.txt", b"texto", "text/plain")},
+            data={"backend": "replicate"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 400
+
+    def test_job_page_inexistente_retorna_404(self):
+        resp = client.get("/job/nao-existe")
+        assert resp.status_code == 404

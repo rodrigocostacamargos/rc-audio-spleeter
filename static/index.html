@@ -40,125 +40,31 @@
       margin-bottom: 2rem;
     }
 
-    /* Drop zone */
-    .dropzone {
+    /* File input styled */
+    .file-group {
       border: 2px dashed #333;
       border-radius: 8px;
-      padding: 2.5rem 1rem;
+      padding: 2rem 1rem;
       text-align: center;
+      transition: border-color 0.2s;
+    }
+    .file-group:hover { border-color: #6c63ff; }
+    .file-group label {
+      display: block;
+      font-size: 0.9rem;
+      color: #888;
       cursor: pointer;
-      transition: border-color 0.2s, background 0.2s;
-      position: relative;
     }
-    .dropzone:hover, .dropzone.dragover {
-      border-color: #6c63ff;
-      background: #1e1b33;
-    }
-    .dropzone input[type="file"] {
-      position: absolute;
-      inset: 0;
-      opacity: 0;
-      cursor: pointer;
-      width: 100%;
-      height: 100%;
-    }
-    .dropzone .icon { font-size: 2rem; margin-bottom: 0.5rem; }
-    .dropzone p { font-size: 0.9rem; color: #888; }
-    .dropzone .file-name {
-      margin-top: 0.6rem;
+    .file-group input[type="file"] {
+      margin-top: 0.8rem;
       font-size: 0.85rem;
       color: #aaa;
-      font-style: italic;
     }
-
-    /* Button */
-    button {
-      width: 100%;
-      margin-top: 1.25rem;
-      padding: 0.8rem;
-      background: #6c63ff;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      font-size: 0.95rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.2s, opacity 0.2s;
-    }
-    button:hover:not(:disabled) { background: #5a52e0; }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
-
-    /* Status */
-    .status {
-      margin-top: 1.25rem;
-      font-size: 0.85rem;
-      color: #888;
-      text-align: center;
-      min-height: 1.2em;
-    }
-    .status.error { color: #e05a5a; }
-
-    /* Progress bar */
-    .progress-wrap {
-      margin-top: 1rem;
-      background: #2a2a2a;
-      border-radius: 999px;
-      height: 6px;
-      overflow: hidden;
-      display: none;
-    }
-    .progress-wrap.visible { display: block; }
-    .progress-bar {
-      height: 100%;
-      background: #6c63ff;
-      width: 0%;
-      transition: width 0.4s ease;
-      border-radius: 999px;
-    }
-
-    /* Results */
-    .results {
-      margin-top: 1.75rem;
-      display: none;
-      flex-direction: column;
-      gap: 0.6rem;
-    }
-    .results.visible { display: flex; }
-    .results h2 {
-      font-size: 0.8rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #555;
-      margin-bottom: 0.2rem;
-    }
-
-    .stem-row {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      background: #222;
-      border-radius: 8px;
-      padding: 0.65rem 0.9rem;
-    }
-    .stem-label {
-      font-size: 0.85rem;
-      font-weight: 600;
-      color: #bbb;
-      width: 60px;
-      flex-shrink: 0;
-      text-transform: capitalize;
-    }
-    .stem-row audio {
-      flex: 1;
-      height: 32px;
-    }
-    .stem-row a {
+    .file-hint {
       font-size: 0.75rem;
-      color: #6c63ff;
-      text-decoration: none;
-      white-space: nowrap;
+      color: #555;
+      margin-top: 0.4rem;
     }
-    .stem-row a:hover { text-decoration: underline; }
 
     /* Backend selector */
     .backend-group {
@@ -186,6 +92,30 @@
     }
     .backend-opt input[type="radio"] { accent-color: #6c63ff; }
     .backend-opt small { color: #555; font-size: 0.75rem; }
+
+    /* Button */
+    button {
+      width: 100%;
+      margin-top: 1.25rem;
+      padding: 0.8rem;
+      background: #6c63ff;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+    }
+    button:hover:not(:disabled) { background: #5a52e0; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .note {
+      margin-top: 1rem;
+      font-size: 0.75rem;
+      color: #555;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
@@ -194,212 +124,37 @@
   <h1>Audio Spleeter</h1>
   <p class="subtitle">Separa vocals · drums · bass · other</p>
 
-  <div class="dropzone" id="dropzone">
-    <input type="file" id="fileInput" accept=".wav,.mp3,.m4a" />
-    <div class="icon">🎵</div>
-    <p>Arraste um arquivo ou clique para selecionar</p>
-    <p style="font-size:0.75rem;color:#555;margin-top:0.3rem">.wav · .mp3 · .m4a</p>
-    <p class="file-name" id="fileName"></p>
-  </div>
+  <form method="POST" action="upload" enctype="multipart/form-data" id="uploadForm">
 
-  <!-- Backend selector -->
-  <div class="backend-group">
-    <label class="backend-opt">
-      <input type="radio" name="backend" value="replicate" checked>
-      <span>Replicate <small>(nuvem · ~9 min)</small></span>
-    </label>
-    <label class="backend-opt">
-      <input type="radio" name="backend" value="local">
-      <span>Local CPU <small>(offline · ~30–60 min)</small></span>
-    </label>
-  </div>
+    <div class="file-group">
+      <label for="fileInput">Selecione um arquivo de audio</label>
+      <input type="file" id="fileInput" name="file" accept=".wav,.mp3,.m4a" required />
+      <p class="file-hint">.wav · .mp3 · .m4a</p>
+    </div>
 
-  <button id="btn" disabled>Separar stems</button>
+    <div class="backend-group">
+      <label class="backend-opt">
+        <input type="radio" name="backend" value="replicate" checked>
+        <span>Replicate <small>(nuvem · ~9 min)</small></span>
+      </label>
+      <label class="backend-opt">
+        <input type="radio" name="backend" value="local">
+        <span>Local CPU <small>(offline · ~7 min)</small></span>
+      </label>
+    </div>
 
-  <div class="progress-wrap" id="progressWrap">
-    <div class="progress-bar" id="progressBar"></div>
-  </div>
+    <button type="submit" id="btn">Separar stems</button>
+  </form>
 
-  <p class="status" id="status"></p>
-
-  <div class="results" id="results">
-    <h2>Stems geradas</h2>
-    <div id="stemList"></div>
-  </div>
+  <p class="note">Apos clicar, aguarde o envio do arquivo. Voce sera redirecionado automaticamente.</p>
 </div>
 
 <script>
-  const API_URL = 'separate';
-
-  const dropzone   = document.getElementById('dropzone');
-  const fileInput  = document.getElementById('fileInput');
-  const fileName   = document.getElementById('fileName');
-  const btn        = document.getElementById('btn');
-  const status     = document.getElementById('status');
-  const progressWrap = document.getElementById('progressWrap');
-  const progressBar  = document.getElementById('progressBar');
-  const results    = document.getElementById('results');
-  const stemList   = document.getElementById('stemList');
-
-  let selectedFile = null;
-
-  // Drag & drop visual feedback
-  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
-  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-  dropzone.addEventListener('drop', e => {
-    e.preventDefault();
-    dropzone.classList.remove('dragover');
-    const file = e.dataTransfer.files[0];
-    if (file) setFile(file);
-  });
-
-  fileInput.addEventListener('change', () => {
-    if (fileInput.files[0]) setFile(fileInput.files[0]);
-  });
-
-  function setFile(file) {
-    selectedFile = file;
-    fileName.textContent = file.name;
-    btn.disabled = false;
-    clearResults();
-  }
-
-  function clearResults() {
-    results.classList.remove('visible');
-    stemList.innerHTML = '';
-    status.textContent = '';
-    status.className = 'status';
-    progressWrap.classList.remove('visible');
-    progressBar.style.width = '0%';
-  }
-
-  // Fake progress animation while waiting for the model (~9 min)
-  let progressInterval = null;
-  function startProgress() {
-    progressWrap.classList.add('visible');
-    let pct = 0;
-    progressInterval = setInterval(() => {
-      // Sobe rápido até 80%, depois devagar — evita chegar em 100% antes de terminar
-      const step = pct < 80 ? 0.4 : 0.05;
-      pct = Math.min(pct + step, 95);
-      progressBar.style.width = pct + '%';
-    }, 500);
-  }
-
-  function stopProgress(success) {
-    clearInterval(progressInterval);
-    progressBar.style.width = success ? '100%' : '0%';
-    setTimeout(() => progressWrap.classList.remove('visible'), 1000);
-  }
-
-  btn.addEventListener('click', async () => {
-    if (!selectedFile) return;
-
+  document.getElementById("uploadForm").addEventListener("submit", function() {
+    var btn = document.getElementById("btn");
     btn.disabled = true;
-    clearResults();
-    startProgress();
-
-    const backend = document.querySelector('input[name="backend"]:checked').value;
-    const statusMsg = backend === 'local'
-      ? `Processando localmente (pode levar 30–60 min)…`
-      : `Enviando "${selectedFile.name}" para processamento (Replicate)…`;
-    setStatus(statusMsg);
-
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-    formData.append('backend', backend);
-
-    try {
-      // 1. Envia o arquivo — resposta imediata com job_id
-      const res = await fetch(API_URL, { method: 'POST', body: formData });
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.detail || `Erro ${res.status}`);
-      }
-
-      const jobId = data.job_id;
-
-      // 2. Poll GET /status/{jobId} a cada 3s até terminar
-      await pollStatus(jobId);
-
-    } catch (err) {
-      stopProgress(false);
-      setStatus('Erro: ' + err.message, true);
-      btn.disabled = false;
-    }
+    btn.textContent = "Enviando arquivo...";
   });
-
-  async function pollStatus(jobId) {
-    const INTERVAL_MS = 3000;
-    let dots = 0;
-
-    return new Promise((resolve) => {
-      const timer = setInterval(async () => {
-        try {
-          const res = await fetch(`status/${jobId}`);
-          const data = await res.json();
-
-          if (data.status === 'done') {
-            clearInterval(timer);
-            stopProgress(true);
-            setStatus('');
-            renderStems(data.stems, data.paths);
-            btn.disabled = false;
-            resolve();
-
-          } else if (data.status === 'error') {
-            clearInterval(timer);
-            stopProgress(false);
-            setStatus('Erro: ' + (data.detail || 'falha no processamento'), true);
-            btn.disabled = false;
-            resolve();
-
-          } else {
-            // still processing — animate dots so user knows it's alive
-            dots = (dots + 1) % 4;
-            const base = status.textContent.replace(/\.+$/, '');
-            setStatus(base.trimEnd() + '.'.repeat(dots + 1));
-          }
-        } catch (err) {
-          clearInterval(timer);
-          stopProgress(false);
-          setStatus('Erro ao verificar status: ' + err.message, true);
-          btn.disabled = false;
-          resolve();
-        }
-      }, INTERVAL_MS);
-    });
-  }
-
-  function setStatus(msg, isError = false) {
-    status.textContent = msg;
-    status.className = 'status' + (isError ? ' error' : '');
-  }
-
-  function renderStems(stems, paths) {
-    stemList.innerHTML = '';
-
-    const order = ['vocals', 'drums', 'bass', 'other'];
-    const sorted = order.filter(s => stems.includes(s));
-
-    for (const stem of sorted) {
-      const filePath = paths[stem];
-      // Expõe o arquivo via endpoint de download
-      const downloadUrl = `stems/${encodeURIComponent(filePath.split('/').pop())}`;
-
-      const row = document.createElement('div');
-      row.className = 'stem-row';
-      row.innerHTML = `
-        <span class="stem-label">${stem}</span>
-        <audio controls preload="none" src="${downloadUrl}"></audio>
-        <a href="${downloadUrl}" download>baixar</a>
-      `;
-      stemList.appendChild(row);
-    }
-
-    results.classList.add('visible');
-  }
 </script>
 
 </body>

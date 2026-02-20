@@ -19,7 +19,7 @@ from pathlib import Path
 import replicate
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, Request, UploadFile, HTTPException
-from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -73,7 +73,10 @@ async def log_requests(request: Request, call_next):
 @app.get("/", response_class=HTMLResponse)
 def index():
     """Serve a interface web."""
-    return FileResponse("static/index.html")
+    return FileResponse(
+        "static/index.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @app.get("/logs")
@@ -342,6 +345,47 @@ async def separate(
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
 
+@app.post("/upload")
+async def upload_form(
+    file: UploadFile = File(...),
+    backend: str = Form("replicate"),
+):
+    """Upload via formulário HTML tradicional — redireciona para /job/{job_id}."""
+    validate_audio_file(file)
+
+    if backend not in {"replicate", "local"}:
+        raise HTTPException(status_code=400, detail="backend deve ser 'replicate' ou 'local'.")
+
+    original_name = Path(file.filename or "audio").stem
+    suffix = Path(file.filename or "audio").suffix.lower() or ".wav"
+    log.info("Form upload — file: %s, backend: %s", file.filename, backend)
+
+    content = await file.read()
+
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "processing"}
+
+    thread = threading.Thread(
+        target=_process_job,
+        args=(job_id, content, suffix, original_name, backend),
+        daemon=True,
+    )
+    thread.start()
+
+    return RedirectResponse(url=f"job/{job_id}", status_code=303)
+
+
+@app.get("/job/{job_id}", response_class=HTMLResponse)
+def job_page(job_id: str):
+    """Página de acompanhamento do job com polling automático."""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job não encontrado.")
+    return HTMLResponse(
+        content=JOB_PAGE_HTML.replace("{{JOB_ID}}", job_id),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
 @app.get("/status/{job_id}")
 def get_status(job_id: str) -> JSONResponse:
     """Retorna o status de um job: processing | done | error."""
@@ -349,6 +393,149 @@ def get_status(job_id: str) -> JSONResponse:
     if job is None:
         raise HTTPException(status_code=404, detail="Job não encontrado.")
     return JSONResponse(job)
+
+
+# ---------------------------------------------------------------------------
+# Job status page template (inline HTML)
+# ---------------------------------------------------------------------------
+
+JOB_PAGE_HTML = """<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Processando - Audio Spleeter</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      padding: 2.5rem;
+      width: 100%;
+      max-width: 540px;
+      text-align: center;
+    }
+    h1 { font-size: 1.4rem; font-weight: 600; color: #fff; margin-bottom: 1.5rem; }
+    .status { font-size: 0.95rem; color: #888; margin-bottom: 1.5rem; min-height: 1.5em; }
+    .status.error { color: #e05a5a; }
+    .status.done { color: #4ade80; }
+    .progress-wrap {
+      background: #2a2a2a; border-radius: 999px; height: 6px;
+      overflow: hidden; margin-bottom: 1.5rem;
+    }
+    .progress-bar {
+      height: 100%; background: #6c63ff; width: 5%;
+      border-radius: 999px; transition: width 0.5s ease;
+    }
+    .stem-row {
+      display: flex; align-items: center; gap: 0.75rem;
+      background: #222; border-radius: 8px; padding: 0.65rem 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+    .stem-label {
+      font-size: 0.85rem; font-weight: 600; color: #bbb;
+      width: 60px; flex-shrink: 0; text-transform: capitalize; text-align: left;
+    }
+    .stem-row audio { flex: 1; height: 32px; }
+    .stem-row a { font-size: 0.75rem; color: #6c63ff; text-decoration: none; white-space: nowrap; }
+    .stem-row a:hover { text-decoration: underline; }
+    .results { display: none; text-align: left; }
+    .results.visible { display: block; }
+    .results h2 {
+      font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: #555; margin-bottom: 0.6rem;
+    }
+    .back-link {
+      display: inline-block; margin-top: 1.5rem; color: #6c63ff;
+      text-decoration: none; font-size: 0.85rem;
+    }
+    .back-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>Audio Spleeter</h1>
+  <div class="progress-wrap"><div class="progress-bar" id="bar"></div></div>
+  <p class="status" id="status">Processando...</p>
+  <div class="results" id="results">
+    <h2>Stems geradas</h2>
+    <div id="stemList"></div>
+  </div>
+  <a class="back-link" href="..">Novo upload</a>
+</div>
+<script>
+  var jobId = "{{JOB_ID}}";
+  var statusEl = document.getElementById("status");
+  var bar = document.getElementById("bar");
+  var resultsEl = document.getElementById("results");
+  var stemList = document.getElementById("stemList");
+  var pct = 5;
+  var dots = 0;
+
+  var timer = setInterval(function() {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "../status/" + jobId);
+    xhr.timeout = 10000;
+    xhr.onload = function() {
+      try { var data = JSON.parse(xhr.responseText); } catch(e) { return; }
+
+      if (data.status === "done") {
+        clearInterval(timer);
+        bar.style.width = "100%";
+        statusEl.textContent = "Concluido!";
+        statusEl.className = "status done";
+        renderStems(data.stems, data.paths);
+      } else if (data.status === "error") {
+        clearInterval(timer);
+        bar.style.width = "0%";
+        statusEl.textContent = data.detail || "Erro no processamento";
+        statusEl.className = "status error";
+      } else {
+        dots = (dots + 1) % 4;
+        var step = pct < 80 ? 2 : 0.3;
+        pct = Math.min(pct + step, 95);
+        bar.style.width = pct + "%";
+        statusEl.textContent = "Processando" + "....".substring(0, dots + 1);
+      }
+    };
+    xhr.onerror = function() {
+      dots = (dots + 1) % 4;
+      statusEl.textContent = "Reconectando" + "....".substring(0, dots + 1);
+    };
+    xhr.send();
+  }, 3000);
+
+  function renderStems(stems, paths) {
+    var order = ["vocals", "drums", "bass", "other"];
+    for (var i = 0; i < order.length; i++) {
+      var stem = order[i];
+      if (stems.indexOf(stem) === -1) continue;
+      var file = paths[stem].split("/").pop();
+      var url = "../stems/" + encodeURIComponent(file);
+      var row = document.createElement("div");
+      row.className = "stem-row";
+      row.innerHTML =
+        '<span class="stem-label">' + stem + "</span>" +
+        '<audio controls preload="none" src="' + url + '"></audio>' +
+        '<a href="' + url + '" download>baixar</a>';
+      stemList.appendChild(row);
+    }
+    resultsEl.className = "results visible";
+  }
+</script>
+</body>
+</html>"""
 
 
 # ---------------------------------------------------------------------------
