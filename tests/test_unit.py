@@ -3,6 +3,7 @@ Testes unitários — sem chamadas reais à API do Replicate.
 Todas as dependências externas são substituídas por mocks.
 """
 
+import time as time_module
 import pytest
 import httpx
 from io import BytesIO
@@ -26,6 +27,17 @@ client = TestClient(app)
 def make_upload(filename: str, content_type: str, content: bytes = b"fake audio") -> UploadFile:
     """Cria um UploadFile sintético para testes de unidade."""
     return UploadFile(filename=filename, file=BytesIO(content), headers={"content-type": content_type})
+
+
+def wait_for_job(job_id: str, timeout: float = 5.0) -> dict:
+    """Faz polling em GET /status/{job_id} até status != 'processing' ou timeout."""
+    deadline = time_module.time() + timeout
+    while time_module.time() < deadline:
+        resp = client.get(f"/status/{job_id}")
+        if resp.json().get("status") != "processing":
+            return resp.json()
+        time_module.sleep(0.05)
+    return client.get(f"/status/{job_id}").json()
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +253,7 @@ def make_replicate_client_mock(run_return_value):
 
 
 # ---------------------------------------------------------------------------
-# Endpoint POST /separate
+# Endpoint POST /separate  (fluxo assíncrono: 202 + polling)
 # ---------------------------------------------------------------------------
 
 class TestSeparateEndpoint:
@@ -270,9 +282,11 @@ class TestSeparateEndpoint:
             "/separate",
             files={"file": ("song.wav", b"RIFF fake wav", "audio/wav")},
         )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
 
-        assert resp.status_code == 200
-        data = resp.json()
+        data = wait_for_job(job_id)
+        assert data["status"] == "done"
         assert "request_id" not in data
         assert set(data["stems"]) == {"vocals", "drums", "bass", "other"}
         assert all(k in data["paths"] for k in ["vocals", "drums", "bass", "other"])
@@ -303,12 +317,15 @@ class TestSeparateEndpoint:
             "/separate",
             files={"file": ("song.mp3", b"ID3 fake mp3", "audio/mpeg")},
         )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
 
-        assert resp.status_code == 200
-        assert set(resp.json()["stems"]) == {"vocals", "drums", "bass", "other"}
+        data = wait_for_job(job_id)
+        assert data["status"] == "done"
+        assert set(data["stems"]) == {"vocals", "drums", "bass", "other"}
 
     @patch("main.replicate.Client")
-    def test_erro_replicate_retorna_500(self, mock_client_cls):
+    def test_erro_replicate_reportado_no_status(self, mock_client_cls):
         mock_instance = MagicMock()
         mock_instance.files.create.side_effect = Exception("Replicate indisponível")
         mock_client_cls.return_value = mock_instance
@@ -317,9 +334,12 @@ class TestSeparateEndpoint:
             "/separate",
             files={"file": ("song.wav", b"RIFF fake wav", "audio/wav")},
         )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
 
-        assert resp.status_code == 500
-        assert "Replicate error" in resp.json()["detail"]
+        data = wait_for_job(job_id)
+        assert data["status"] == "error"
+        assert "Replicate error" in data["detail"]
 
     @patch("main.save_stem")
     @patch("main.replicate.Client")
@@ -330,10 +350,41 @@ class TestSeparateEndpoint:
         mock_save.return_value = None
 
         resp = client.post("/separate", files={"file": ("minha musica.wav", b"RIFF", "audio/wav")})
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
 
+        data = wait_for_job(job_id)
+        assert data["status"] == "done"
+        assert data["paths"]["vocals"].endswith("vocals_minha musica.mp3")
+
+
+# ---------------------------------------------------------------------------
+# Endpoint GET /status/{job_id}
+# ---------------------------------------------------------------------------
+
+class TestStatusEndpoint:
+    def test_job_inexistente_retorna_404(self):
+        resp = client.get("/status/nao-existe-esse-job")
+        assert resp.status_code == 404
+
+    def test_job_existente_retorna_dados(self):
+        from main import jobs
+        jobs["test-job-fixo"] = {
+            "status": "done",
+            "stems": ["vocals"],
+            "paths": {"vocals": "stems/vocals_test.mp3"},
+        }
+        resp = client.get("/status/test-job-fixo")
         assert resp.status_code == 200
-        paths = resp.json()["paths"]
-        assert paths["vocals"].endswith("vocals_minha musica.mp3")
+        assert resp.json()["status"] == "done"
+        assert resp.json()["stems"] == ["vocals"]
+
+    def test_job_processing_retorna_status_processing(self):
+        from main import jobs
+        jobs["test-job-processing"] = {"status": "processing"}
+        resp = client.get("/status/test-job-processing")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "processing"
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +408,11 @@ class TestSeparateEndpointBackend:
             data={"backend": "local"},
             files={"file": ("song.wav", b"RIFF", "audio/wav")},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+
+        data = wait_for_job(job_id)
+        assert data["status"] == "done"
         mock_local.assert_called_once()
 
     @patch("main.separate_with_replicate")
@@ -368,5 +423,9 @@ class TestSeparateEndpointBackend:
             "/separate",
             files={"file": ("song.wav", b"RIFF", "audio/wav")},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+
+        data = wait_for_job(job_id)
+        assert data["status"] == "done"
         mock_rep.assert_called_once()

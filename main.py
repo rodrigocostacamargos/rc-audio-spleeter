@@ -8,8 +8,10 @@ import os
 import shutil
 import sys
 import time
+import uuid
 import logging
 import tempfile
+import threading
 import subprocess
 import httpx
 from pathlib import Path
@@ -50,6 +52,9 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(title="Audio Stem Separator", version="1.0.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# In-memory job store: {job_id: {"status": "processing"|"done"|"error", ...}}
+jobs: dict[str, dict] = {}
 
 
 @app.middleware("http")
@@ -253,73 +258,97 @@ def separate_with_local(wav_path: Path, original_name: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Endpoint
+# Background job processor
 # ---------------------------------------------------------------------------
 
-@app.post("/separate")
+def _process_job(job_id: str, content: bytes, suffix: str, original_name: str, backend: str) -> None:
+    """Runs in a background thread: converts, separates and updates jobs dict."""
+    tmp_path = None
+    wav_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+
+        wav_path = tmp_path
+        if tmp_path.suffix.lower() != ".wav":
+            wav_path = convert_to_wav(tmp_path)
+
+        if backend == "local":
+            saved_stems = separate_with_local(wav_path, original_name)
+        else:
+            saved_stems = separate_with_replicate(wav_path, original_name)
+
+        if not saved_stems:
+            jobs[job_id] = {"status": "error", "detail": "Model returned no stems."}
+            return
+
+        log.info("Stems salvas: %s", list(saved_stems.values()))
+        jobs[job_id] = {
+            "status": "done",
+            "stems": list(saved_stems.keys()),
+            "paths": saved_stems,
+        }
+
+    except Exception as exc:
+        log.exception("Processing failed for job %s", job_id)
+        prefix = "Replicate error" if backend == "replicate" else "Local processing error"
+        jobs[job_id] = {"status": "error", "detail": f"{prefix}: {exc}"}
+    finally:
+        if tmp_path:
+            tmp_path.unlink(missing_ok=True)
+        if wav_path and wav_path != tmp_path:
+            wav_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/separate", status_code=202)
 async def separate(
     file: UploadFile = File(...),
     backend: str = Form("replicate"),
 ) -> JSONResponse:
     """
-    Receive an audio file, separate it into stems using the chosen backend,
-    and return their local paths.
+    Enfileira a separação de stems em background e retorna imediatamente um job_id.
+    Use GET /status/{job_id} para acompanhar o progresso.
     """
-    # 1. Validate input
     validate_audio_file(file)
 
     if backend not in {"replicate", "local"}:
         raise HTTPException(status_code=400, detail="backend deve ser 'replicate' ou 'local'.")
 
-    original_name = Path(file.filename or "audio").stem  # nome sem extensão
+    original_name = Path(file.filename or "audio").stem
     suffix = Path(file.filename or "audio").suffix.lower() or ".wav"
     log.info("New request — file: %s, backend: %s", file.filename, backend)
 
-    # 2. Save upload to a temp file
     try:
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(await file.read())
-            tmp_path = Path(tmp.name)
+        content = await file.read()
     except Exception as exc:
-        log.exception("Failed to save uploaded file")
-        raise HTTPException(status_code=500, detail="Could not save uploaded file.") from exc
+        log.exception("Failed to read uploaded file")
+        raise HTTPException(status_code=500, detail="Could not read uploaded file.") from exc
 
-    # 3. Converter para .wav se necessário (o modelo exige formato identificável)
-    wav_path = tmp_path
-    if tmp_path.suffix.lower() != ".wav":
-        try:
-            wav_path = convert_to_wav(tmp_path)
-        except subprocess.CalledProcessError as exc:
-            tmp_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=500, detail="Falha ao converter áudio para wav.") from exc
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "processing"}
 
-    # 4. Route to backend
-    try:
-        if backend == "local":
-            saved_stems = separate_with_local(wav_path, original_name)
-        else:
-            saved_stems = separate_with_replicate(wav_path, original_name)
-    except Exception as exc:
-        log.exception("Processing failed")
-        prefix = "Replicate error" if backend == "replicate" else "Local processing error"
-        raise HTTPException(status_code=500, detail=f"{prefix}: {exc}") from exc
-    finally:
-        tmp_path.unlink(missing_ok=True)
-        if wav_path != tmp_path:
-            wav_path.unlink(missing_ok=True)
-
-    if not saved_stems:
-        raise HTTPException(status_code=500, detail="Model returned no stems.")
-
-    log.info("Stems salvas: %s", list(saved_stems.values()))
-
-    return JSONResponse(
-        status_code=200,
-        content={
-            "stems": list(saved_stems.keys()),
-            "paths": saved_stems,
-        },
+    thread = threading.Thread(
+        target=_process_job,
+        args=(job_id, content, suffix, original_name, backend),
+        daemon=True,
     )
+    thread.start()
+
+    return JSONResponse(status_code=202, content={"job_id": job_id})
+
+
+@app.get("/status/{job_id}")
+def get_status(job_id: str) -> JSONResponse:
+    """Retorna o status de um job: processing | done | error."""
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job não encontrado.")
+    return JSONResponse(job)
 
 
 # ---------------------------------------------------------------------------
