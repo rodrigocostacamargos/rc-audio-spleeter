@@ -5,6 +5,8 @@ vocals, drums, bass, other
 """
 
 import os
+import shutil
+import sys
 import time
 import logging
 import tempfile
@@ -14,7 +16,7 @@ from pathlib import Path
 
 import replicate
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, Form, Request, UploadFile, HTTPException
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -28,17 +30,36 @@ load_dotenv()  # carrega variáveis do arquivo .env (se existir)
 ALLOWED_CONTENT_TYPES = {"audio/wav", "audio/wave", "audio/mpeg", "audio/mp3", "audio/x-wav", "audio/mp4", "audio/x-m4a", "video/mp4"}
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".m4a"}
 STEMS_DIR = Path("stems")
+LOG_FILE = Path("logs/spleeter.log")
 
 REPLICATE_MODEL = "lucataco/mvsep-mdx23-music-separation:510b9b91aec1bfa7d634e6c06ee80c18492fb0fc06aa1474533fbda90dd3dba4"
 
 # Timeout generoso: upload de arquivos grandes + processamento do modelo podem levar vários minutos
 REPLICATE_TIMEOUT = httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=30.0)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        logging.StreamHandler(),                          # stdout (docker logs)
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),  # arquivo persistente
+    ],
+)
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="Audio Stem Separator", version="1.0.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    elapsed = time.time() - start
+    log.info("%s %s → %d (%.2fs)", request.method, request.url.path, response.status_code, elapsed)
+    return response
+
 
 # ---------------------------------------------------------------------------
 # UI & file serving
@@ -48,6 +69,15 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 def index():
     """Serve a interface web."""
     return FileResponse("static/index.html")
+
+
+@app.get("/logs")
+def get_logs(n: int = 100):
+    """Retorna as últimas n linhas do log (padrão: 100)."""
+    if not LOG_FILE.exists():
+        return JSONResponse({"lines": []})
+    lines = LOG_FILE.read_text(encoding="utf-8").splitlines()
+    return JSONResponse({"lines": lines[-n:]})
 
 
 @app.get("/stems/{filename}")
@@ -153,23 +183,99 @@ def parse_stems(output) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Backend implementations
+# ---------------------------------------------------------------------------
+
+def separate_with_replicate(wav_path: Path, original_name: str) -> dict[str, str]:
+    """Envia o wav para o Replicate e retorna dict stem→path_local_mp3."""
+    replicate_client = replicate.Client(
+        api_token=os.environ["REPLICATE_API_TOKEN"],
+        timeout=REPLICATE_TIMEOUT,
+    )
+
+    log.info("Uploading audio to Replicate Files API (%s) …", wav_path.name)
+    with open(wav_path, "rb") as audio_file:
+        replicate_file = replicate_client.files.create(audio_file)
+
+    log.info("Running model %s …", REPLICATE_MODEL)
+    output = run_with_retry(
+        replicate_client,
+        REPLICATE_MODEL,
+        {"audio": replicate_file.urls["get"]},
+    )
+    log.info("Replicate finished. Parsing output …")
+    stems_urls = parse_stems(output)
+
+    STEMS_DIR.mkdir(parents=True, exist_ok=True)
+    saved: dict[str, str] = {}
+    for stem_name, url in stems_urls.items():
+        dest = STEMS_DIR / f"{stem_name}_{original_name}.mp3"
+        save_stem(url, dest)
+        saved[stem_name] = str(dest)
+
+    return saved
+
+
+def separate_with_local(wav_path: Path, original_name: str) -> dict[str, str]:
+    """Roda Demucs via subprocess na CPU e retorna dict stem→path_local_mp3."""
+    STEM_NAMES = ["vocals", "drums", "bass", "other"]
+
+    with tempfile.TemporaryDirectory() as tmp_out:
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable, "-m", "demucs",
+                    "--mp3", "--mp3-bitrate", "192",
+                    "-d", "cpu",
+                    "-n", "htdemucs",
+                    "-o", tmp_out,
+                    str(wav_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.decode(errors="replace").strip()
+            log.error("Demucs falhou (exit %d):\n%s", exc.returncode, stderr)
+            raise RuntimeError(f"Demucs falhou: {stderr[-400:]}") from exc
+        # Demucs cria: {tmp_out}/htdemucs/{wav_path.stem}/{stem}.mp3
+        source_dir = Path(tmp_out) / "htdemucs" / wav_path.stem
+        STEMS_DIR.mkdir(parents=True, exist_ok=True)
+        saved: dict[str, str] = {}
+        for stem_name in STEM_NAMES:
+            src = source_dir / f"{stem_name}.mp3"
+            if src.exists():
+                dst = STEMS_DIR / f"{stem_name}_{original_name}.mp3"
+                shutil.move(str(src), str(dst))
+                saved[stem_name] = str(dst)
+
+    return saved
+
+
+# ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
 
 @app.post("/separate")
-async def separate(file: UploadFile = File(...)) -> JSONResponse:
+async def separate(
+    file: UploadFile = File(...),
+    backend: str = Form("replicate"),
+) -> JSONResponse:
     """
-    Receive an audio file, send it to Replicate for stem separation,
-    download the results, and return their local paths.
+    Receive an audio file, separate it into stems using the chosen backend,
+    and return their local paths.
     """
     # 1. Validate input
     validate_audio_file(file)
 
+    if backend not in {"replicate", "local"}:
+        raise HTTPException(status_code=400, detail="backend deve ser 'replicate' ou 'local'.")
+
     original_name = Path(file.filename or "audio").stem  # nome sem extensão
     suffix = Path(file.filename or "audio").suffix.lower() or ".wav"
-    log.info("New request — file: %s", file.filename)
+    log.info("New request — file: %s, backend: %s", file.filename, backend)
 
-    # 2. Save upload to a temp file so Replicate can read it
+    # 2. Save upload to a temp file
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(await file.read())
@@ -187,48 +293,23 @@ async def separate(file: UploadFile = File(...)) -> JSONResponse:
             tmp_path.unlink(missing_ok=True)
             raise HTTPException(status_code=500, detail="Falha ao converter áudio para wav.") from exc
 
-    # 4. Call Replicate
+    # 4. Route to backend
     try:
-        replicate_client = replicate.Client(
-            api_token=os.environ["REPLICATE_API_TOKEN"],
-            timeout=REPLICATE_TIMEOUT,
-        )
-
-        log.info("Uploading audio to Replicate Files API (%s) …", wav_path.name)
-        with open(wav_path, "rb") as audio_file:
-            replicate_file = replicate_client.files.create(audio_file)
-
-        log.info("Running model %s …", REPLICATE_MODEL)
-        output = run_with_retry(
-            replicate_client,
-            REPLICATE_MODEL,
-            {"audio": replicate_file.urls["get"]},
-        )
-        log.info("Replicate finished. Parsing output …")
-        stems_urls = parse_stems(output)
+        if backend == "local":
+            saved_stems = separate_with_local(wav_path, original_name)
+        else:
+            saved_stems = separate_with_replicate(wav_path, original_name)
     except Exception as exc:
-        log.exception("Replicate processing failed")
-        raise HTTPException(status_code=500, detail=f"Replicate error: {exc}") from exc
+        log.exception("Processing failed")
+        prefix = "Replicate error" if backend == "replicate" else "Local processing error"
+        raise HTTPException(status_code=500, detail=f"{prefix}: {exc}") from exc
     finally:
         tmp_path.unlink(missing_ok=True)
         if wav_path != tmp_path:
             wav_path.unlink(missing_ok=True)
 
-    if not stems_urls:
+    if not saved_stems:
         raise HTTPException(status_code=500, detail="Model returned no stems.")
-
-    # 5. Salva stems em stems/{instrumento}_{nome_da_musica}.mp3
-    STEMS_DIR.mkdir(parents=True, exist_ok=True)
-
-    saved_stems: dict[str, str] = {}
-    try:
-        for stem_name, url in stems_urls.items():
-            dest = STEMS_DIR / f"{stem_name}_{original_name}.mp3"
-            save_stem(url, dest)
-            saved_stems[stem_name] = str(dest)
-    except Exception as exc:
-        log.exception("Failed to download stems")
-        raise HTTPException(status_code=500, detail=f"Could not download stems: {exc}") from exc
 
     log.info("Stems salvas: %s", list(saved_stems.values()))
 

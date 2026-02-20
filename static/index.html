@@ -159,13 +159,40 @@
       white-space: nowrap;
     }
     .stem-row a:hover { text-decoration: underline; }
+
+    /* Backend selector */
+    .backend-group {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 1.25rem;
+    }
+    .backend-opt {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.5rem 0.85rem;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: #aaa;
+      transition: border-color 0.2s, background 0.2s;
+      flex: 1;
+    }
+    .backend-opt:has(input:checked) {
+      border-color: #6c63ff;
+      background: #1e1b33;
+      color: #ddd;
+    }
+    .backend-opt input[type="radio"] { accent-color: #6c63ff; }
+    .backend-opt small { color: #555; font-size: 0.75rem; }
   </style>
 </head>
 <body>
 
 <div class="card">
   <h1>Audio Spleeter</h1>
-  <p class="subtitle">Separa vocals · drums · bass · other via Replicate MDX23</p>
+  <p class="subtitle">Separa vocals · drums · bass · other</p>
 
   <div class="dropzone" id="dropzone">
     <input type="file" id="fileInput" accept=".wav,.mp3,.m4a" />
@@ -173,6 +200,18 @@
     <p>Arraste um arquivo ou clique para selecionar</p>
     <p style="font-size:0.75rem;color:#555;margin-top:0.3rem">.wav · .mp3 · .m4a</p>
     <p class="file-name" id="fileName"></p>
+  </div>
+
+  <!-- Backend selector -->
+  <div class="backend-group">
+    <label class="backend-opt">
+      <input type="radio" name="backend" value="replicate" checked>
+      <span>Replicate <small>(nuvem · ~9 min)</small></span>
+    </label>
+    <label class="backend-opt">
+      <input type="radio" name="backend" value="local">
+      <span>Local CPU <small>(offline · ~30–60 min)</small></span>
+    </label>
   </div>
 
   <button id="btn" disabled>Separar stems</button>
@@ -190,7 +229,7 @@
 </div>
 
 <script>
-  const API_URL = 'http://localhost:8000/separate';
+  const API_URL = 'separate';
 
   const dropzone   = document.getElementById('dropzone');
   const fileInput  = document.getElementById('fileInput');
@@ -259,10 +298,16 @@
     btn.disabled = true;
     clearResults();
     startProgress();
-    setStatus(`Enviando "${selectedFile.name}" para processamento…`);
+
+    const backend = document.querySelector('input[name="backend"]:checked').value;
+    const statusMsg = backend === 'local'
+      ? `Processando localmente (pode levar 30–60 min)…`
+      : `Enviando "${selectedFile.name}" para processamento (Replicate)…`;
+    setStatus(statusMsg);
 
     const formData = new FormData();
     formData.append('file', selectedFile);
+    formData.append('backend', backend);
 
     try {
       const res = await fetch(API_URL, {
@@ -302,7 +347,7 @@
     for (const stem of sorted) {
       const filePath = paths[stem];
       // Expõe o arquivo via endpoint de download
-      const downloadUrl = `http://localhost:8000/stems/${encodeURIComponent(filePath.split('/').pop())}`;
+      const downloadUrl = `stems/${encodeURIComponent(filePath.split('/').pop())}`;
 
       const row = document.createElement('div');
       row.className = 'stem-row';

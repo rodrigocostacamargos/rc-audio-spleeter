@@ -1,0 +1,11 @@
+.git
+__pycache__
+*.pyc
+.venv
+stems/
+musicas/
+*.tar.gz
+*.log
+tests/
+.env
+.pytest_cache

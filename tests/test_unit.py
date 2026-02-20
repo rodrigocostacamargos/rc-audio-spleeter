@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
-from main import app, validate_audio_file, parse_stems, save_stem, run_with_retry
+from main import app, validate_audio_file, parse_stems, save_stem, run_with_retry, separate_with_replicate, separate_with_local
 
 client = TestClient(app)
 
@@ -334,3 +334,39 @@ class TestSeparateEndpoint:
         assert resp.status_code == 200
         paths = resp.json()["paths"]
         assert paths["vocals"].endswith("vocals_minha musica.mp3")
+
+
+# ---------------------------------------------------------------------------
+# Endpoint POST /separate — backend selection
+# ---------------------------------------------------------------------------
+
+class TestSeparateEndpointBackend:
+    def test_backend_invalido_retorna_400(self):
+        resp = client.post(
+            "/separate",
+            data={"backend": "openai"},
+            files={"file": ("song.wav", b"RIFF", "audio/wav")},
+        )
+        assert resp.status_code == 400
+
+    @patch("main.separate_with_local")
+    def test_backend_local_chama_demucs(self, mock_local):
+        mock_local.return_value = {"vocals": "stems/vocals_song.mp3"}
+        resp = client.post(
+            "/separate",
+            data={"backend": "local"},
+            files={"file": ("song.wav", b"RIFF", "audio/wav")},
+        )
+        assert resp.status_code == 200
+        mock_local.assert_called_once()
+
+    @patch("main.separate_with_replicate")
+    def test_backend_replicate_default(self, mock_rep):
+        mock_rep.return_value = {"vocals": "stems/vocals_song.mp3"}
+        # sem enviar 'backend' → usa replicate por padrão
+        resp = client.post(
+            "/separate",
+            files={"file": ("song.wav", b"RIFF", "audio/wav")},
+        )
+        assert resp.status_code == 200
+        mock_rep.assert_called_once()

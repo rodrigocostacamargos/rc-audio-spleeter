@@ -1,0 +1,21 @@
+services:
+  spleeter:
+    build: .
+    container_name: spleeter
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      REPLICATE_API_TOKEN: ${REPLICATE_API_TOKEN}
+    volumes:
+      - stems_data:/app/stems
+      - model_cache:/root/.cache
+      - logs_data:/app/logs
+
+volumes:
+  stems_data:
+    driver: local
+  model_cache:
+    driver: local
+  logs_data:
+    driver: local

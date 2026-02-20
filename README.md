@@ -1,114 +1,116 @@
 # rc-audio-spleeter
 
-API REST em Python para separação de stems de áudio usando o modelo [lucataco/mvsep-mdx23-music-separation](https://replicate.com/lucataco/mvsep-mdx23-music-separation) via [Replicate](https://replicate.com).
+API REST + interface web para separação de stems de áudio. Suporta dois backends:
 
-Dado um arquivo de áudio, o serviço retorna quatro stems separadas:
+| Backend | Como funciona | Tempo (~5 min de música) |
+|---------|--------------|--------------------------|
+| **Replicate** (padrão) | Envia o áudio para o modelo [lucataco/mvsep-mdx23](https://replicate.com/lucataco/mvsep-mdx23-music-separation) via GPU na nuvem | ~9 min |
+| **Local CPU** | Roda [Demucs htdemucs](https://github.com/facebookresearch/demucs) localmente na CPU | ~30–60 min |
+
+Dado um arquivo de áudio, o serviço retorna quatro stems em MP3:
 
 | Stem | Descrição |
 |------|-----------|
 | `vocals` | Voz principal e backing vocals |
 | `drums` | Bateria e percussão |
 | `bass` | Baixo |
-| `other` | Tudo o que não se encaixa nas anteriores (guitarras, teclados, etc.) |
+| `other` | Guitarras, teclados, etc. |
 
 ---
 
-## Requisitos
-
-| Dependência | Versão mínima | Observação |
-|-------------|--------------|------------|
-| Python | 3.11+ | |
-| ffmpeg | qualquer | Deve estar no `PATH` |
-| Conta Replicate | — | Token em [replicate.com/account/api-tokens](https://replicate.com/account/api-tokens) |
-
----
-
-## Instalação
+## Opção 1 — Docker (recomendado)
 
 ```bash
-# 1. Clone o repositório
+git clone https://github.com/rodrigocostacamargos/rc-audio-spleeter.git
+cd rc-audio-spleeter
+cp .env.example .env          # preencha REPLICATE_API_TOKEN
+docker compose up -d --build
+```
+
+Acesse em `http://localhost:8001`.
+
+As stems ficam num volume Docker persistente (`stems_data`).
+Os logs ficam em `logs_data` e também acessíveis via `GET /logs`.
+
+---
+
+## Opção 2 — Execução local
+
+**Requisitos:** Python 3.11+, ffmpeg no PATH, conta no [Replicate](https://replicate.com/account/api-tokens) (para backend Replicate).
+
+```bash
+# 1. Clone e entre na pasta
 git clone https://github.com/rodrigocostacamargos/rc-audio-spleeter.git
 cd rc-audio-spleeter
 
-# 2. (Opcional) crie e ative um virtualenv
+# 2. Crie e ative virtualenv
 python -m venv .venv && source .venv/bin/activate
 
-# 3. Instale as dependências
+# 3. Instale dependências
+#    PyTorch CPU-only (menor download; GPU não é necessária)
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 
-# 4. Instale o ffmpeg (se ainda não tiver)
-# Ubuntu/Debian:
-sudo apt install ffmpeg
-# macOS:
-brew install ffmpeg
+# 4. Configure o token
+cp .env.example .env          # edite e preencha REPLICATE_API_TOKEN
+
+# 5. Suba o servidor
+uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 ```
+
+Acesse em `http://localhost:8001`.
 
 ---
 
-## Configuração
+## Uso
 
-Copie o arquivo de exemplo e preencha o token:
+### Interface web
 
-```bash
-cp .env.example .env
-```
+Abra `http://localhost:8001` no navegador, selecione o backend, faça upload do arquivo e aguarde o processamento. Os stems aparecem com player embutido para reprodução e download.
 
-Edite `.env`:
+### API
 
-```env
-REPLICATE_API_TOKEN=r8_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
+#### `POST /separate`
 
-> O token começa sempre com `r8_`. Nunca commite o arquivo `.env`.
-
----
-
-## Execução
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-Acesse a documentação interativa em: `http://localhost:8000/docs`
-
----
-
-## Uso da API
-
-### `POST /separate`
-
-Recebe um arquivo de áudio e retorna as stems separadas.
-
-**Formatos aceitos:** `.wav`, `.mp3`, `.m4a`
+| Campo (form-data) | Tipo | Obrigatório | Padrão |
+|-------------------|------|-------------|--------|
+| `file` | arquivo de áudio (`.wav`, `.mp3`, `.m4a`) | sim | — |
+| `backend` | `"replicate"` ou `"local"` | não | `"replicate"` |
 
 **Exemplo com curl:**
 
 ```bash
-curl -X POST http://localhost:8000/separate \
-  -F "file=@/caminho/para/musica.wav"
+# Backend Replicate (padrão)
+curl -X POST http://localhost:8001/separate \
+  -F "file=@musica.mp3"
+
+# Backend local (Demucs CPU)
+curl -X POST http://localhost:8001/separate \
+  -F "file=@musica.mp3" \
+  -F "backend=local"
 ```
 
 **Resposta de sucesso (200):**
 
 ```json
 {
-  "request_id": "550e8400-e29b-41d4-a716-446655440000",
-  "stems": ["bass", "drums", "other", "vocals"],
+  "stems": ["vocals", "drums", "bass", "other"],
   "paths": {
-    "bass":   "output/550e8400-.../bass.wav",
-    "drums":  "output/550e8400-.../drums.wav",
-    "other":  "output/550e8400-.../other.wav",
-    "vocals": "output/550e8400-.../vocals.wav"
+    "vocals": "stems/vocals_musica.mp3",
+    "drums":  "stems/drums_musica.mp3",
+    "bass":   "stems/bass_musica.mp3",
+    "other":  "stems/other_musica.mp3"
   }
 }
 ```
 
-**Respostas de erro:**
+#### `GET /stems/{filename}`
 
-| Código | Situação |
-|--------|----------|
-| `400` | Arquivo inválido ou formato não suportado |
-| `500` | Falha na conversão, upload ou no modelo Replicate |
+Baixa ou faz streaming de um stem gerado.
+
+#### `GET /logs?n=100`
+
+Retorna as últimas `n` linhas do log de execução (útil para diagnóstico em produção).
 
 ---
 
@@ -117,48 +119,40 @@ curl -X POST http://localhost:8000/separate \
 ```
 rc-audio-spleeter/
 ├── main.py                  # Aplicação FastAPI (único arquivo)
-├── requirements.txt         # Dependências de produção
+├── requirements.txt         # Dependências Python
+├── Dockerfile               # Imagem Docker (PyTorch CPU-only + ffmpeg)
+├── docker-compose.yml       # Serviço com volumes persistentes
+├── .dockerignore
 ├── .env.example             # Template de configuração
-├── .gitignore
+├── static/
+│   └── index.html           # Interface web (HTML puro, sem framework)
 ├── tests/
-│   ├── __init__.py
-│   ├── test_unit.py         # 20 testes unitários (sem chamadas reais)
-│   └── test_integration.py  # Teste de integração real com o Replicate
-├── output/                  # Stems geradas (criado automaticamente)
-└── docs/
-    ├── ARCHITECTURE.md      # Decisões técnicas e arquitetura
-    └── TROUBLESHOOTING.md   # Problemas encontrados e soluções
+│   ├── test_unit.py         # Testes unitários (~28, sem chamadas reais)
+│   └── test_integration.py  # Teste de integração real com o Replicate (~10 min)
+├── stems/                   # Stems geradas (criado automaticamente)
+└── logs/                    # Logs persistentes (criado automaticamente)
 ```
 
 ---
 
 ## Testes
 
-### Unitários (rápidos, sem API)
-
 ```bash
-pip install pytest pytest-asyncio
+# Unitários (rápidos, sem API)
 pytest tests/test_unit.py -v
-```
 
-Saída esperada: **20 passed**
-
-### Integração (requer token + ~10 min)
-
-```bash
+# Integração (requer REPLICATE_API_TOKEN, ~10 min)
 pytest tests/test_integration.py -v -s
 ```
 
-O teste envia o arquivo em `musicas/` para o Replicate e valida que os 4 arquivos `.wav` são salvos em disco.
-
 ---
 
-## Observações de tempo de processamento
+## Arquitetura — fluxo do `POST /separate`
 
-O modelo MDX23 é pesado. Tempos aproximados observados:
-
-| Duração da música | Tempo de processamento |
-|---|---|
-| ~5 min | ~9 minutos |
-
-O processamento ocorre nos servidores do Replicate (GPU). O serviço aguarda de forma síncrona (polling).
+1. Validação do arquivo (extensão + content-type)
+2. Salva o upload em arquivo temporário
+3. Converte para `.wav` via ffmpeg (se necessário)
+4. **Replicate:** faz upload via Files API → chama o modelo com `wait=False` (polling) → retry automático em rate limit 429 (backoff linear 15s × tentativa)
+5. **Local:** executa `demucs --mp3 -d cpu -n htdemucs` via subprocess
+6. Normaliza o output (`dict` ou `list` de URLs, dependendo da versão do modelo)
+7. Converte stems WAV → MP3 via ffmpeg e salva em `stems/{instrumento}_{nome_original}.mp3`
