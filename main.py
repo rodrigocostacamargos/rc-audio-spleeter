@@ -5,6 +5,7 @@ vocals, drums, bass, other
 """
 
 import os
+import time
 import logging
 import tempfile
 import subprocess
@@ -106,6 +107,25 @@ def save_stem(url: str, dest_path: Path) -> None:
         tmp_wav.unlink(missing_ok=True)
 
 
+def run_with_retry(client, model: str, input_data: dict, max_retries: int = 5) -> object:
+    """
+    Executa o modelo no Replicate com retry automático em caso de rate limit (429).
+    O RetryTransport do cliente só faz retry em GET — POST precisa de tratamento manual.
+    Backoff linear: aguarda 15s, 30s, 45s… entre tentativas.
+    """
+    for attempt in range(max_retries):
+        try:
+            return client.run(model, input=input_data, wait=False)
+        except replicate.exceptions.ReplicateError as exc:
+            is_rate_limit = getattr(exc, "status", None) == 429
+            if is_rate_limit and attempt < max_retries - 1:
+                delay = 15 * (attempt + 1)
+                log.warning("Rate limit (429). Aguardando %ds antes da tentativa %d/%d…", delay, attempt + 2, max_retries)
+                time.sleep(delay)
+            else:
+                raise
+
+
 def parse_stems(output) -> dict[str, str]:
     """
     Normalise the Replicate model output to a dict mapping stem name → URL.
@@ -179,12 +199,10 @@ async def separate(file: UploadFile = File(...)) -> JSONResponse:
             replicate_file = replicate_client.files.create(audio_file)
 
         log.info("Running model %s …", REPLICATE_MODEL)
-        # wait=False: evita o modo blocking (Prefer: wait, limite de 60s no servidor)
-        # O cliente faz polling via prediction.wait() com o timeout configurado
-        output = replicate_client.run(
+        output = run_with_retry(
+            replicate_client,
             REPLICATE_MODEL,
-            input={"audio": replicate_file.urls["get"]},
-            wait=False,
+            {"audio": replicate_file.urls["get"]},
         )
         log.info("Replicate finished. Parsing output …")
         stems_urls = parse_stems(output)

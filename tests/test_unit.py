@@ -8,12 +8,13 @@ import httpx
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+import replicate.exceptions
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
-from main import app, validate_audio_file, parse_stems, save_stem
+from main import app, validate_audio_file, parse_stems, save_stem, run_with_retry
 
 client = TestClient(app)
 
@@ -110,6 +111,72 @@ class TestParseStems:
         output = ("https://cdn.example.com/vocals.wav",)
         result = parse_stems(output)
         assert "vocals" in result
+
+
+# ---------------------------------------------------------------------------
+# run_with_retry
+# ---------------------------------------------------------------------------
+
+class TestRunWithRetry:
+    def _make_429(self):
+        err = replicate.exceptions.ReplicateError("rate limited")
+        err.status = 429
+        return err
+
+    @patch("main.time.sleep")
+    def test_sucesso_na_primeira_tentativa(self, mock_sleep):
+        mock_client = MagicMock()
+        mock_client.run.return_value = {"vocals": "https://example.com/v.wav"}
+
+        result = run_with_retry(mock_client, "model", {})
+
+        assert result == {"vocals": "https://example.com/v.wav"}
+        mock_client.run.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    @patch("main.time.sleep")
+    def test_retry_em_429_e_sucesso_na_segunda(self, mock_sleep):
+        mock_client = MagicMock()
+        mock_client.run.side_effect = [self._make_429(), {"vocals": "https://example.com/v.wav"}]
+
+        result = run_with_retry(mock_client, "model", {})
+
+        assert mock_client.run.call_count == 2
+        mock_sleep.assert_called_once_with(15)  # delay da 1ª tentativa
+
+    @patch("main.time.sleep")
+    def test_levanta_apos_max_retries(self, mock_sleep):
+        mock_client = MagicMock()
+        mock_client.run.side_effect = self._make_429()
+
+        with pytest.raises(replicate.exceptions.ReplicateError):
+            run_with_retry(mock_client, "model", {}, max_retries=3)
+
+        assert mock_client.run.call_count == 3
+        assert mock_sleep.call_count == 2  # sleep entre tentativas, não após a última
+
+    @patch("main.time.sleep")
+    def test_backoff_linear(self, mock_sleep):
+        mock_client = MagicMock()
+        mock_client.run.side_effect = [self._make_429(), self._make_429(), {"ok": True}]
+
+        run_with_retry(mock_client, "model", {}, max_retries=5)
+
+        delays = [call.args[0] for call in mock_sleep.call_args_list]
+        assert delays == [15, 30]  # 15*1, 15*2
+
+    @patch("main.time.sleep")
+    def test_nao_faz_retry_em_outros_erros(self, mock_sleep):
+        mock_client = MagicMock()
+        err = replicate.exceptions.ReplicateError("server error")
+        err.status = 500
+        mock_client.run.side_effect = err
+
+        with pytest.raises(replicate.exceptions.ReplicateError):
+            run_with_retry(mock_client, "model", {})
+
+        mock_client.run.assert_called_once()
+        mock_sleep.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
